@@ -10,7 +10,7 @@ data Env = Env { _port :: T.Text
                , _output :: FilePath
                , _domain :: T.Text
                , _app :: T.Text
-               , _version :: T.Text }
+               }
 
 
 data Current = SendGreeting
@@ -32,8 +32,7 @@ data Message =
 
 
 data State =
-  State { _socket :: Socket
-        , _current :: Current
+  State { _current :: Current
         , _message :: Message
         }
 

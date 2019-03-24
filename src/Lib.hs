@@ -1,90 +1,66 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
-
 module Lib
-    ( run
+    ( runSMTeePee
     ) where
 
 import Control.Concurrent (ThreadId, forkFinally)
 import qualified Control.Exception as E
 import Control.Monad (unless, forever, void)
-import Control.Monad.Reader (MonadReader(..), ReaderT(..), runReaderT, asks, lift)
-import Control.Monad.IO.Class (MonadIO(..))
-import Control.Monad.IO.Unlift (MonadUnliftIO(..), UnliftIO(..), unliftIO, withUnliftIO)
-import Control.Monad.State.Strict (MonadState(..), StateT(..), evalStateT, gets, modify')
-import qualified Data.ByteString as S
-import qualified Data.Char as C
+import Control.Monad.Freer
+import Control.Monad.Freer.TH
+import qualified Control.Monad.Freer.Error as E
+import qualified Control.Monad.Freer.Reader as R
+import qualified Control.Monad.Freer.State as S 
+import qualified Control.Monad.Freer.Writer as W
 import qualified Data.Text as T
-import Data.Time.Clock.POSIX as Time
-import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import Network.Socket hiding (recv)
-import Network.Socket.ByteString (recv, sendAll)
-import GHC.Generics
-import Client (ClientM(..))
+import Network.Socket (Socket, withSocketsDo)
+import Effects.Client (Client(..), runClientSocket)
+import Effects.Address (Address(..), runAddress, resolve, open, close, accept)
+import Effects.DumpMessage (DumpMessage(..), runDumpMessage, dumpMessage)
+import Effects.Log (Log(..), runLog, logMessage)
 import Transport (step)
+import Options.Applicative ( Parser, strOption, long, short, help
+                           , showDefault, value, execParser
+                           , info, helper, fullDesc, progDesc
+                           , (<**>) )
 import State (Env(..), State(..), Current(..), Message(..))
 import System.FilePath ((<.>), (</>))
 
-newtype SmtpM a = SmtpM { runSmtpM :: (ReaderT Env IO a) }
-  deriving (Functor, Applicative, Monad, MonadReader Env)
-
-instance MonadIO SmtpM where
-  liftIO = SmtpM . liftIO 
-
-instance MonadUnliftIO SmtpM where
-  askUnliftIO = SmtpM $ withUnliftIO $ \u ->
-        return (UnliftIO (unliftIO u . runSmtpM))
 
 
-runServer :: SmtpM ()
+runServer :: Member IO effs
+          => Member (R.Reader Env) effs
+          => Member Address effs
+          => Member Log effs
+          => Eff effs ()
 runServer = do
-  port <- asks _port
-  addr <- liftIO $ resolve (T.unpack port)
-  withRunInIO $ \runInIO ->
-    E.bracket (open addr) close (runInIO . loop)
-  --socket <- liftIO $ open addr
-  --loop socket
+  port <- R.asks _port
+  addr <- resolve (T.unpack port)
+
+  logMessage $ "Listening on port " <> port
+
+  --withRunInIO $ \runInIO ->
+  --  E.bracket (open addr) close (runInIO . loop)
+  socket <- open addr
+  loop socket
 
 
-resolve :: ServiceName -> IO AddrInfo
-resolve port = do
-  let hints = defaultHints {
-        addrFlags = [AI_PASSIVE]
-        , addrSocketType = Stream
-        }
-  addr:_ <- getAddrInfo (Just hints) Nothing (Just port)
-  return addr
-
-open :: AddrInfo -> IO Socket
-open addr = do
-  sock <- liftIO $ socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-  setSocketOption sock ReuseAddr 1
-  bind sock (addrAddress addr)
-
-  let fd = fdSocket sock
-  setCloseOnExecIfNeeded fd
-  listen sock 10
-  return sock
-
-loop :: Socket -> SmtpM ()
+-- | Continuously listen for incoming connections.
+loop :: Member (R.Reader Env) effs
+     => Member Address effs
+     => Member Log effs
+     => Member IO effs
+     => Socket
+     -> Eff effs ()
 loop sock = forever $ do
-  (conn, peer) <- liftIO $ accept sock
-  liftIO $ putStrLn $ "Connection from " ++ show peer
-  void $ smtpMForkFinally2 (talk conn) (\_ -> close conn)
+  (conn, peer) <- accept sock
+  env <- R.ask
+  logMessage $ "Connection from " <> (T.pack . show) peer
+  send $ forkFinally (talk conn env) (const $ closeSocket conn)
 
-smtpMForkFinally :: SmtpM m -> (Either E.SomeException m -> IO ()) -> SmtpM ThreadId 
-smtpMForkFinally action and_then = SmtpM $ ReaderT $ run
-  where
-    run :: Env -> IO ThreadId
-    run env = forkFinally ( runReaderT ( runSmtpM action ) env ) and_then
 
-smtpMForkFinally2 :: SmtpM m -> (Either E.SomeException m -> IO ()) -> SmtpM ThreadId 
-smtpMForkFinally2 action and_then =  
-  withRunInIO $ \runInIO -> forkFinally (runInIO action) and_then
+closeSocket :: Socket -> IO ()
+closeSocket conn =
+  runM $ runAddress $ close conn
 
 
 emptyMessage :: Message
@@ -93,68 +69,61 @@ emptyMessage = Message { _from = ""
                        , _data = "" }
 
 
-newtype ThreadStateM a = ThreadStateM { runThreadStateM :: (StateT State SmtpM a) }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadState State, MonadReader Env)
-
-
-trimNewlines :: T.Text -> T.Text
-trimNewlines = T.dropWhile isLineSeparator . T.dropWhileEnd isLineSeparator
+-- | We need to set up a new effect chain here.
+-- As far as I can tell effects won't work very well over thread boundaries.
+talk :: Socket -> Env -> IO ()
+talk sock env = do
+  res <- runM $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runClientSocket sock $ runAddress runThread 
+  return $ fst res
   where
-   isLineSeparator :: Char -> Bool
-   isLineSeparator c = case c of
-                         '\r' -> True
-                         '\n' -> True
-                         _ -> False
+    state = State { _current = SendGreeting
+                  , _message = emptyMessage }
 
 
-instance ClientM ThreadStateM where
-  getMessage = do
-    socket <- gets _socket
-    input <- liftIO $ recv socket 4096
-    let input' = trimNewlines $ decodeUtf8 input
-    liftIO $ putStrLn $ T.unpack $ "C: '" <> input' <> "'"
-    return $ input'
-
-  sendMessage msg = do
-    socket <- gets _socket
-    liftIO $ putStrLn $ T.unpack $ "S: " <> msg
-    liftIO $ sendAll socket $ encodeUtf8 $ msg <> "\n"
-            
-
-
-talk :: Socket -> SmtpM ()
-talk conn = do
-  evalStateT ( runThreadStateM $ runThread conn ) $ State { _socket = conn
-                                                          , _current = SendGreeting
-                                                          , _message = emptyMessage }
-
-dumpMessage :: FilePath -> T.Text -> IO ()
-dumpMessage dir msg = do
-  ts <- Time.getPOSIXTime
-  let path = dir </> show ts <.> "eml"
-  writeFile path $ T.unpack msg
-
-
-runThread :: Socket -> ThreadStateM ()
-runThread conn = do
-  state <- gets _current
-  (liftIO . putStrLn) $ show state
+runThread :: Member (R.Reader Env) effs
+          => Member (S.State State) effs
+          => Member Client effs
+          => Member DumpMessage effs
+          => Member Address effs
+          => Eff effs ()
+runThread = do
+  state <- S.gets _current
   step state
   if state == End
-    then do path <- asks _output
-            msg <- gets (_data . _message)
-            (liftIO . dumpMessage path) msg
-    else runThread conn
+    then do path <- R.asks _output
+            msg <- S.gets (_data . _message)
+            dumpMessage path msg
+    else runThread 
 
-run :: IO ()
-run = withSocketsDo $ do
-  let
-    env = Env { _port = "28"
-              , _output = "./received/"
-              , _domain = "smtp.ponk.com"
-              , _app = "Smteepee"
-              , _version = "0.1" }
-  putStrLn $ "Listening on port " <> (T.unpack $ _port env)
-  runReaderT (runSmtpM runServer) env 
+
+args :: Parser Env
+args = Env <$> strOption ( long "port"
+                           <> short 'p'
+                           <> showDefault <> value "28"
+                           <> help "The port to listen on" )
+       <*> strOption ( long "output"
+                       <> short 'o'
+                       <> showDefault <> value "./received/"
+                       <> help "The folder to dump the received emails" )
+       <*> strOption ( long "domain"
+                       <> short 'd'
+                       <> showDefault <> value "smtp.ponk.com"
+                       <> help "The domain to say we are from" )
+       <*> strOption ( long "app"
+                       <> short 'a'
+                       <> showDefault <> value "SMTeepee"
+                       <> help "The app we say we are" )
+
+
+runSMTeePee :: IO ()
+runSMTeePee = do
+  env <- execParser opts
+  withSocketsDo $
+    runM $ (R.runReader env) $ runLog $ runAddress runServer
+
+  where
+    opts = info ( args <**> helper )
+      ( fullDesc <>
+      progDesc "Run a fake smtp server" )
 
 
