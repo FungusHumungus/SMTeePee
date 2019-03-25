@@ -2,7 +2,6 @@ module Lib
     ( runSMTeePee
     ) where
 
-import Control.Concurrent (ThreadId, forkFinally)
 import qualified Control.Exception as E
 import Control.Monad (unless, forever, void)
 import Control.Monad.Freer
@@ -15,6 +14,7 @@ import qualified Data.Text as T
 import Network.Socket (Socket, withSocketsDo)
 import Effects.Client (Client(..), runClientSocket)
 import Effects.Address (Address(..), runAddress, resolve, open, close, accept)
+import Effects.Fork (Fork(..), runFork, forkFinally)
 import Effects.DumpMessage (DumpMessage(..), runDumpMessage, dumpMessage)
 import Effects.Log (Log(..), runLog, logMessage)
 import Transport (step)
@@ -30,6 +30,7 @@ import System.FilePath ((<.>), (</>))
 runServer :: Member IO effs
           => Member (R.Reader Env) effs
           => Member Address effs
+          => Member Fork effs
           => Member Log effs
           => Eff effs ()
 runServer = do
@@ -48,19 +49,23 @@ runServer = do
 loop :: Member (R.Reader Env) effs
      => Member Address effs
      => Member Log effs
-     => Member IO effs
+     => Member Fork effs
      => Socket
      -> Eff effs ()
 loop sock = forever $ do
   (conn, peer) <- accept sock
   env <- R.ask
   logMessage $ "Connection from " <> (T.pack . show) peer
-  send $ forkFinally (talk conn env) (const $ closeSocket conn)
+  _ <- forkFinally (threadEffs conn env) runThread (const $ closeSocket conn)
+
+  return ()
 
 
-closeSocket :: Socket -> IO ()
+closeSocket :: Member Address eff
+            => Socket
+            -> Eff eff () 
 closeSocket conn =
-  runM $ runAddress $ close conn
+   close conn
 
 
 emptyMessage :: Message
@@ -69,17 +74,18 @@ emptyMessage = Message { _from = ""
                        , _data = "" }
 
 
--- | We need to set up a new effect chain here.
--- As far as I can tell effects won't work very well over thread boundaries.
-talk :: Socket -> Env -> IO ()
-talk sock env = do
-  res <- runM $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runClientSocket sock $ runAddress runThread 
-  return $ fst res
+-- | Build up the Effs we want in our thread
+threadEffs :: Socket -> Env -> Eff '[Address, Client, R.Reader Env, S.State State, DumpMessage, IO] a -> IO a
+threadEffs sock env eff = 
+  fst <$> ( runM $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runClientSocket sock $ runAddress eff )
   where
     state = State { _current = SendGreeting
                   , _message = emptyMessage }
 
 
+
+-- | We need to set up a new effect chain here.
+-- As far as I can tell effects won't work very well over thread boundaries.
 runThread :: Member (R.Reader Env) effs
           => Member (S.State State) effs
           => Member Client effs
@@ -119,7 +125,7 @@ runSMTeePee :: IO ()
 runSMTeePee = do
   env <- execParser opts
   withSocketsDo $
-    runM $ (R.runReader env) $ runLog $ runAddress runServer
+    runM $ (R.runReader env) $ runLog $ runFork $ runAddress runServer
 
   where
     opts = info ( args <**> helper )
