@@ -27,8 +27,7 @@ import System.FilePath ((<.>), (</>))
 
 
 
-runServer :: Member IO effs
-          => Member (R.Reader Env) effs
+runServer :: Member (R.Reader Env) effs
           => Member Address effs
           => Member Fork effs
           => Member Log effs
@@ -75,22 +74,21 @@ emptyMessage = Message { _from = ""
 
 
 -- | Build up the Effs we want in our thread
-threadEffs :: Socket -> Env -> Eff '[Address, Client, R.Reader Env, S.State State, DumpMessage, IO] a -> IO a
+threadEffs :: Socket -> Env -> Eff '[Address, Client, R.Reader Env, S.State State, DumpMessage, Log, IO] a -> IO a
 threadEffs sock env eff = 
-  fst <$> ( runM $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runClientSocket sock $ runAddress eff )
+  fst <$> ( runM $ runLog $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runClientSocket sock $ runAddress eff )
   where
     state = State { _current = SendGreeting
                   , _message = emptyMessage }
 
 
 
--- | We need to set up a new effect chain here.
--- As far as I can tell effects won't work very well over thread boundaries.
 runThread :: Member (R.Reader Env) effs
           => Member (S.State State) effs
           => Member Client effs
           => Member DumpMessage effs
           => Member Address effs
+          => Member Log effs
           => Eff effs ()
 runThread = do
   state <- S.gets _current

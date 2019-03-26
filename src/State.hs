@@ -35,4 +35,5 @@ data State =
   State { _current :: Current
         , _message :: Message
         }
+  deriving (Show)
 

@@ -42,6 +42,8 @@ dependencies:
 - time
 - filepath
 - freer-simple
+- parsec
+- scotty
 - optparse-applicative
 
 

@@ -19,6 +19,6 @@ runDumpMessage =
   interpret $ \case
   DumpMessage path msg -> do
     ts <- send Time.getPOSIXTime
-    let path = path </> show ts <.> "eml"
-    send $ writeFile path $ T.unpack msg
+    let path' = path </> show ts <.> "eml"
+    send $ writeFile path' $ T.unpack msg
 

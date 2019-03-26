@@ -13,6 +13,13 @@ import qualified Data.Text as T
 import Effects.Client (Client(..), getMessage, sendMessage)
 import State (Env(..), State(..), Message(..), Current(..))
 
+-- | Udpate the state with the next step.
+next :: Member (S.State State) effs 
+     => Current 
+     -> Eff effs ()
+next current = S.modify (\st -> st { _current = current })
+
+
 -- | Handles the various stages of the SMTP protocol.
 -- The current state is held in the State effect.
 step :: Member (R.Reader Env) effs
@@ -24,20 +31,20 @@ step SendGreeting = do
   domain <- R.asks _domain
   app <- R.asks _app
   sendMessage $ "220 " <> domain <> " ESMTP " <> app
-  S.modify (\st -> st { _current = ReceiveGreeting })
+  next ReceiveGreeting
 
 
 step ReceiveGreeting = do
   input <- getMessage 
   if T.isPrefixOf "HELO" input
-    then S.modify (\st -> st { _current = Accepted })
-    else S.modify (\st -> st { _current = Rejected })
+    then next Accepted
+    else next Rejected
 
 
 step Accepted = do
   domain <- R.asks _domain
   sendMessage $ "250 " <> domain <> ", I am glad to meet you"
-  S.modify (\st -> st { _current = Accept })
+  next Accept
 
 
 step Accept = do
@@ -51,11 +58,11 @@ step Accept = do
                         st { _message = message { _to = input : (_to message) } })
     else if T.isPrefixOf "DATA" input
     then do sendMessage "354 End data with <CR><LF>.<CR><LF>"
-            S.modify (\st -> st { _current = AcceptData })
+            next AcceptData
     else if T.isPrefixOf "QUIT" input
-    then S.modify (\st -> st { _current = End })
+    then next End
     else if input == ""
-    then S.modify (\st -> st { _current = End })
+    then next End
     else pure ()
 
 
@@ -65,21 +72,26 @@ step AcceptData = do
 
   S.modify $ addDataLine datums
 
-  let remainder = dropWhile (/= ".") $ T.lines input
+  let remainder = dropWhile (/= ".") $ trimNewLines <$> T.lines input
   if remainder == ["."]
     then do sendMessage "250 Ok: queued as plork"
-            S.modify (\st -> st { _current = Accept })
+            next Accept
     else return ()
   
 
 step Rejected = do
   sendMessage "Boo"
-  S.modify (\st -> st { _current = End})
+  next End
 
 
 step End = 
   sendMessage "221 Bye"
 
+
+trimNewLines :: T.Text -> T.Text
+trimNewLines = T.dropWhile isNewLine . T.dropWhileEnd isNewLine 
+  where
+    isNewLine c = c == '\n' || c == '\r'
 
 addDataLine :: T.Text -> State -> State
 addDataLine line st = 
