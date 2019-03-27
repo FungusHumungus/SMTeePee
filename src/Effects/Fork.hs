@@ -5,17 +5,24 @@
 
 module Effects.Fork where
 
-import Control.Monad.Freer
-import qualified Control.Monad.Freer as FR
-import Control.Monad.Freer.TH (makeEffect)
+import Polysemy
+import Polysemy.Effect.TH
+import Polysemy.Effect.New
 import qualified Control.Concurrent as C
 import GHC.Exception.Type (SomeException)
 
 
-data Fork r where
-  ForkFinally :: (forall a . ( Eff effs a -> IO a ) ) -> Eff effs a -> (Either SomeException a -> Eff effs ()) -> Fork C.ThreadId
+data Fork m a where
+  ForkFinally :: (forall a . ( Semantic effs a -> IO a ) )
+              -> Semantic effs a
+              -> ( Either SomeException a -> Semantic effs () )
+              -> ( C.ThreadId -> a )
+              -> Fork m a
+  deriving ( Effect)
 
-makeEffect ''Fork
+deriving instance Functor (Fork m)
+
+makeSemantic ''Fork
 
 runFork :: Member IO effs => Eff (Fork ': effs) a -> Eff effs a
 runFork = interpret $ \case

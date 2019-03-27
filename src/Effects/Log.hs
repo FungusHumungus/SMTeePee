@@ -1,15 +1,18 @@
 module Effects.Log where
 
-import Control.Monad.Freer (Member, Eff, interpret, send)
-import Control.Monad.Freer.TH (makeEffect)
+import Polysemy
+import Polysemy.Effect.TH
+import Polysemy.Effect.New
 import qualified Data.Text as T
 
-data Log r where
-  LogMessage :: T.Text -> Log ()
+data Log m a where
+  LogMessage :: T.Text -> a -> Log m a 
+  deriving (Functor, Effect)
 
-makeEffect ''Log
+makeSemantic ''Log
   
-runLog :: Member IO effs => Eff (Log ': effs) a -> Eff effs a
+
+runLog :: Member (Lift IO) sems => Semantic (Log ': sems) a -> Semantic sems a
 runLog =
   interpret $ \case
-  LogMessage msg -> send $ ( putStrLn . T.unpack ) msg
+  LogMessage msg k -> sendM $ ( putStrLn . T.unpack ) msg >> return k

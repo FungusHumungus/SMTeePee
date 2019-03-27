@@ -1,24 +1,27 @@
 module Effects.DumpMessage where
 
-import Control.Monad.Freer (Member, Eff, interpret, send)
-import Control.Monad.Freer.TH (makeEffect)
+import Polysemy
+import Polysemy.Effect.TH
+import Polysemy.Effect.New
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX as Time
 import System.FilePath ((<.>), (</>))
 
 -- | Effect to output the whole email message to whereever it is 
 -- supposed to go.
-data DumpMessage r where
-  DumpMessage :: FilePath -> T.Text -> DumpMessage ()
+data DumpMessage m a where
+  DumpMessage :: FilePath -> T.Text -> a -> DumpMessage m a
+  deriving (Functor, Effect)
 
-makeEffect ''DumpMessage
+makeSemantic ''DumpMessage
 
   
-runDumpMessage :: Member IO effs => Eff (DumpMessage ': effs) a -> Eff effs a
+runDumpMessage :: Member (Lift IO) effs => Semantic (DumpMessage ': effs) a -> Semantic effs a
 runDumpMessage =
   interpret $ \case
-  DumpMessage path msg -> do
-    ts <- send Time.getPOSIXTime
+  DumpMessage path msg k -> do
+    ts <- sendM Time.getPOSIXTime
     let path' = path </> show ts <.> "eml"
-    send $ writeFile path' $ T.unpack msg
+    sendM $ writeFile path' $ T.unpack msg
+    return k
 

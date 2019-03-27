@@ -29,9 +29,13 @@ default-extensions:
 - TypeOperators
 - OverloadedStrings
 - DeriveGeneric
+- DeriveAnyClass
+- DerivingStrategies
+- DeriveFunctor
+- PolyKinds
 - DuplicateRecordFields
 - ScopedTypeVariables
-
+- StandaloneDeriving
 
 
 dependencies:
@@ -41,9 +45,8 @@ dependencies:
 - bytestring
 - time
 - filepath
-- freer-simple
+- polysemy
 - parsec
-- scotty
 - optparse-applicative
 
 

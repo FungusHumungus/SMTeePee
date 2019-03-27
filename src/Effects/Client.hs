@@ -2,35 +2,37 @@
 
 module Effects.Client where
 
-import Control.Monad.Freer
-import qualified Control.Monad.Freer as FR
-import Control.Monad.Freer.TH
+import Polysemy
+import Polysemy.Effect.TH
+import Polysemy.Effect.New
 import qualified Data.Text as T
 import Network.Socket hiding (recv)
 import Network.Socket.ByteString (recv, sendAll)
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 
 
--- | Typeclass for data coming to and from a connected socket
-data Client r where
-  GetMessage :: Client T.Text
-  SendMessage :: T.Text -> Client ()
+-- | Effect for data coming to and from a connected socket
+data Client m a where
+  GetMessage :: (T.Text -> a) -> Client m a
+  SendMessage :: T.Text -> a -> Client m a
+  deriving (Effect, Functor)
 
-makeEffect ''Client
+makeSemantic ''Client
 
-runClientSocket :: Member IO effs => Socket -> Eff (Client ': effs) a -> Eff effs a
+runClientSocket :: Member (Lift IO) sems => Socket -> Semantic (Client ': sems) a -> Semantic sems a
 runClientSocket socket = 
   interpret $ \case
-  GetMessage -> do
-    input <- FR.send $ recv socket 4096
+  GetMessage k -> do
+    input <- sendM $ recv socket 4096
     let input' = decodeUtf8 input
 
     -- Todo this should probably be a separate effect.
-    FR.send $ putStrLn $ T.unpack $ "C: '" <> input' <> "'" 
+    sendM $ putStrLn $ T.unpack $ "C: '" <> input' <> "'" 
 
-    return $ input'
+    return $ k input'
 
-  SendMessage msg -> do
-    FR.send $ putStrLn $ T.unpack $ "S: " <> msg
-    FR.send $ sendAll socket $ encodeUtf8 $ msg <> "\n"
+  SendMessage msg k -> do
+    sendM $ putStrLn $ T.unpack $ "S: " <> msg
+    sendM $ sendAll socket $ encodeUtf8 $ msg <> "\n"
+    return k
  
