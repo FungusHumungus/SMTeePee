@@ -158,3 +158,21 @@ before running the threads stuff.
 
 I'm not 100% happy with this because that runClientSocket is really an implementation detail that is coming along right in the middle of everything. Need to work a better way around this. Maybe I could create some kind of `socket server` effect that keeps all this abstracted away, and keeps the socket in its state, passing only the Client effect to the child threads. Hmmm...? Then a test socket server effect would not spawn a thread.. or indeed not have anything to do with sockets at all..
 
+
+** Slight annoyance
+   
+When setting up the effects 
+
+
+#+BEGIN_SRC haskell
+
+    withSocketsDo $
+     threadEffs env $
+     runFork (threadEffs env) $
+     R.runResource (threadEffs env . runFork (threadEffs env)) $
+     runServer
+
+#+END_SRC
+
+runFork needs an `Semantic -> IO` function as does runResource. runResource needs the threadEffs as well as the runFork eff as it is one eff further along in the chain. So I have four threadEffs in the call. If I needed another `Semantic -> IO` functionjj
+

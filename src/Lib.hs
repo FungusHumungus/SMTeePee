@@ -6,6 +6,7 @@ import qualified Control.Exception as E
 import Control.Monad (unless, forever, void)
 import Polysemy
 import qualified Polysemy.Reader as R
+import qualified Polysemy.Resource as R
 import qualified Polysemy.State as S 
 import qualified Data.Text as T
 import Network.Socket (Socket, withSocketsDo)
@@ -26,6 +27,7 @@ import System.FilePath ((<.>), (</>))
 
 runServer :: Member (R.Reader Env) sems
           => Member Address sems
+          => Member R.Resource sems
           => Member Fork sems
           => Member Log sems
           => Member (Lift IO) sems
@@ -38,10 +40,7 @@ runServer = do
 
   logMessage $ "Listening on port " <> port
 
-  --withRunInIO $ \runInIO ->
-  --  E.bracket (open addr) close (runInIO . loop)
-  socket <- open addr
-  loop socket
+  R.bracket (open addr) close loop
 
 
 -- | Continuously listen for incoming connections.
@@ -123,7 +122,6 @@ args = Env <$> strOption ( long "port"
 -- | Build up the Effs we want in our thread
 threadEffs :: Env -> Semantic '[Address, R.Reader Env, S.State State, DumpMessage, Log, Lift IO] a -> IO a
 threadEffs env eff = 
-  -- fst <$> ( runM $ runLog $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runClientSocket sock $ runAddress eff )
   snd <$> ( runM $ runLog $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runAddress eff )
   where
     state = State { _current = SendGreeting
@@ -135,8 +133,10 @@ runSMTeePee :: IO ()
 runSMTeePee = do
   env <- execParser opts
   withSocketsDo $
-    threadEffs env $ runFork (threadEffs env) runServer
-    -- runM $ (R.runReader env) $ runLog $ runFork (threadEffs env) $ runAddress runServer
+    threadEffs env $
+    runFork (threadEffs env) $
+    R.runResource (threadEffs env . runFork (threadEffs env)) $
+    runServer
 
   where
     opts = info ( args <**> helper )
