@@ -2,34 +2,31 @@
 
 module Transport where
 
-import Control.Monad.Freer
-import Control.Monad.Freer.TH
-import qualified Control.Monad.Freer.Error as E
-import qualified Control.Monad.Freer.Reader as R
-import qualified Control.Monad.Freer.State as S 
-import qualified Control.Monad.Freer.Writer as W
+import Polysemy
+import qualified Polysemy.Reader as R
+import qualified Polysemy.State as S 
 import qualified Data.ByteString as S
 import qualified Data.Text as T
 import Effects.Client (Client(..), getMessage, sendMessage)
 import State (Env(..), State(..), Message(..), Current(..))
 
 -- | Udpate the state with the next step.
-next :: Member (S.State State) effs 
+next :: Member (S.State State) sems
      => Current 
-     -> Eff effs ()
+     -> Semantic sems ()
 next current = S.modify (\st -> st { _current = current })
 
 
 -- | Handles the various stages of the SMTP protocol.
 -- The current state is held in the State effect.
-step :: Member (R.Reader Env) effs
-     => Member (S.State State) effs
-     => Member Client effs
+step :: Member (R.Reader Env) sems
+     => Member (S.State State) sems
+     => Member Client sems
      => Current
-     -> Eff effs ()
+     -> Semantic sems ()
 step SendGreeting = do
-  domain <- R.asks _domain
-  app <- R.asks _app
+  domain <- _domain <$> R.ask
+  app <- _app <$> R.ask
   sendMessage $ "220 " <> domain <> " ESMTP " <> app
   next ReceiveGreeting
 
@@ -42,8 +39,8 @@ step ReceiveGreeting = do
 
 
 step Accepted = do
-  domain <- R.asks _domain
-  sendMessage $ "250 " <> domain <> ", I am glad to meet you"
+  domain <- _domain <$> R.ask 
+  sendMessage $ "250 " <> domain <> ", I hope this day finds you well."
   next Accept
 
 

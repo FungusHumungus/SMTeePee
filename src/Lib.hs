@@ -4,12 +4,9 @@ module Lib
 
 import qualified Control.Exception as E
 import Control.Monad (unless, forever, void)
-import Control.Monad.Freer
-import Control.Monad.Freer.TH
-import qualified Control.Monad.Freer.Error as E
-import qualified Control.Monad.Freer.Reader as R
-import qualified Control.Monad.Freer.State as S 
-import qualified Control.Monad.Freer.Writer as W
+import Polysemy
+import qualified Polysemy.Reader as R
+import qualified Polysemy.State as S 
 import qualified Data.Text as T
 import Network.Socket (Socket, withSocketsDo)
 import Effects.Client (Client(..), runClientSocket)
@@ -27,13 +24,16 @@ import System.FilePath ((<.>), (</>))
 
 
 
-runServer :: Member (R.Reader Env) effs
-          => Member Address effs
-          => Member Fork effs
-          => Member Log effs
-          => Eff effs ()
+runServer :: Member (R.Reader Env) sems
+          => Member Address sems
+          => Member Fork sems
+          => Member Log sems
+          => Member (Lift IO) sems
+          => Member (S.State State) sems
+          => Member DumpMessage sems
+          => Semantic sems ()
 runServer = do
-  port <- R.asks _port
+  port <- _port <$> R.ask
   addr <- resolve (T.unpack port)
 
   logMessage $ "Listening on port " <> port
@@ -45,24 +45,26 @@ runServer = do
 
 
 -- | Continuously listen for incoming connections.
-loop :: Member (R.Reader Env) effs
-     => Member Address effs
-     => Member Log effs
-     => Member Fork effs
+loop :: Member (R.Reader Env) sems
+     => Member Address sems
+     => Member Log sems
+     => Member Fork sems
+     => Member (Lift IO) sems
+     => Member (S.State State) sems
+     => Member DumpMessage sems
      => Socket
-     -> Eff effs ()
+     -> Semantic sems ()
 loop sock = forever $ do
   (conn, peer) <- accept sock
-  env <- R.ask
   logMessage $ "Connection from " <> (T.pack . show) peer
-  _ <- forkFinally (threadEffs conn env) runThread (const $ closeSocket conn)
+  _ <- forkFinally (runThread conn) (const $ closeSocket conn)
 
   return ()
 
 
-closeSocket :: Member Address eff
+closeSocket :: Member Address sems
             => Socket
-            -> Eff eff () 
+            -> Semantic sems () 
 closeSocket conn =
    close conn
 
@@ -73,31 +75,31 @@ emptyMessage = Message { _from = ""
                        , _data = "" }
 
 
--- | Build up the Effs we want in our thread
-threadEffs :: Socket -> Env -> Eff '[Address, Client, R.Reader Env, S.State State, DumpMessage, Log, IO] a -> IO a
-threadEffs sock env eff = 
-  fst <$> ( runM $ runLog $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runClientSocket sock $ runAddress eff )
+runThread :: Member (R.Reader Env) sems
+          => Member (S.State State) sems
+          => Member DumpMessage sems
+          => Member Address sems
+          => Member Log sems
+          => Member (Lift IO) sems
+          => Socket
+          -> Semantic sems ()
+runThread conn = runClientSocket conn go
   where
-    state = State { _current = SendGreeting
-                  , _message = emptyMessage }
-
-
-
-runThread :: Member (R.Reader Env) effs
-          => Member (S.State State) effs
-          => Member Client effs
-          => Member DumpMessage effs
-          => Member Address effs
-          => Member Log effs
-          => Eff effs ()
-runThread = do
-  state <- S.gets _current
-  step state
-  if state == End
-    then do path <- R.asks _output
-            msg <- S.gets (_data . _message)
-            dumpMessage path msg
-    else runThread 
+    go :: Member (R.Reader Env) sems
+       => Member (S.State State) sems
+       => Member Client sems
+       => Member DumpMessage sems
+       => Member Address sems
+       => Member Log sems
+       => Semantic sems ()
+    go = do
+      state <- S.gets _current
+      step state
+      if state == End
+        then do path <- _output <$> R.ask
+                msg <- S.gets (_data . _message)
+                dumpMessage path msg
+        else go
 
 
 args :: Parser Env
@@ -118,12 +120,23 @@ args = Env <$> strOption ( long "port"
                        <> showDefault <> value "SMTeepee"
                        <> help "The app we say we are" )
 
+-- | Build up the Effs we want in our thread
+threadEffs :: Env -> Semantic '[Address, R.Reader Env, S.State State, DumpMessage, Log, Lift IO] a -> IO a
+threadEffs env eff = 
+  -- fst <$> ( runM $ runLog $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runClientSocket sock $ runAddress eff )
+  snd <$> ( runM $ runLog $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runAddress eff )
+  where
+    state = State { _current = SendGreeting
+                  , _message = emptyMessage }
+
+
 
 runSMTeePee :: IO ()
 runSMTeePee = do
   env <- execParser opts
   withSocketsDo $
-    runM $ (R.runReader env) $ runLog $ runFork $ runAddress runServer
+    threadEffs env $ runFork (threadEffs env) runServer
+    -- runM $ (R.runReader env) $ runLog $ runFork (threadEffs env) $ runAddress runServer
 
   where
     opts = info ( args <**> helper )
