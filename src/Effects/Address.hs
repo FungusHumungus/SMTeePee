@@ -42,8 +42,7 @@ runAddress =
 
   Close socket k -> sendM $ S.close socket >> pure k
 
-  Accept socket k -> do
-    res <- sendM $ S.accept socket
-    return $ k res
+  Accept socket k -> 
+    k <$> ( sendM $ S.accept socket )
 
 

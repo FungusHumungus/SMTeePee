@@ -50,11 +50,7 @@ instance Effect Fork where
     ( ook_k s k )
     
 
-  hoist f (ForkFinally action and_then k) =
-    ForkFinally
-    ( f action )
-    ( fmap f and_then )
-    k
+  hoist  = defaultHoist
     
 
 makeSemantic ''Fork 
