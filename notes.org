@@ -1,0 +1,160 @@
+* Some notes on using Polysemy
+
+Polysemy is a library to manage the effects. 
+
+Most of the effects are fairly simple to write. 
+
+
+#+BEGIN_SRC haskell
+
+data Log m a where
+  LogMessage :: T.Text -> a -> Log m a 
+  deriving (Functor, Effect)
+
+makeSemantic ''Log
+  
+
+runLog :: Member (Lift IO) sems => Semantic (Log ': sems) a -> Semantic sems a
+runLog =
+  interpret $ \case
+LogMessage msg k -> sendM $ ( putStrLn . T.unpack ) msg >> return k
+
+#+END_SRC
+
+If the m isn't used, you can derive Effect.
+
+
+Then write yer run function :
+
+#+BEGIN_SRC haskell
+
+runLog :: Member (Lift IO) sems => Semantic (Log ': sems) a -> Semantic sems a
+runLog =
+  interpret $ \case
+  LogMessage msg k -> sendM $ ( putStrLn . T.unpack ) msg >> return k
+
+#+END_SRC
+
+Note each handler needs to return `k` (The 'a' parameter of your data struct).
+
+If your handler is a getter (it needs to return some data, feed the return value through k)
+
+
+#+BEGIN_SRC haskell
+
+  Accept socket k ->
+    k <$> ( sendM $ S.accept socket )
+
+#+END_SRC
+
+
+Note sendM is the equavelent of liftIO..
+
+
+* Moving effects from freer-simple -> Polysemy
+
+The transformation is this:
+
+freer-simple:
+
+#+BEGIN_SRC haskell
+
+data SomeEffect a where
+  GetSomething :: SomeEffect Int
+  PutSomething :: Int -> SomeEffect ()```
+
+#+END_SRC
+
+to polysemy:
+
+#+BEGIN_SRC haskell
+
+data SomeEffect m a where
+
+  GetSomething :: (Int -> a) -> SomeEffect m a
+  PutSomething :: Int -> a -> SomeEffect m a```
+
+#+END_SRC
+
+technically that last one should be `PutSomething :: Int -> (() -> a) -> SomeEffect m a` but that is isomorphic and more complicated than it needs to be
+
+
+* Implementing Effects
+  
+If the `m` is used, then Effect can't be derived. This get's a bit more complicated.
+
+eg. With ForkFinally 
+
+
+#+BEGIN_SRC haskell
+
+data Fork m a 
+  -- = forall r. ForkFinally ( m r ) ( Either SomeException r -> m () ) ( C.ThreadId -> a )
+  = forall r. ForkFinally ( m r ) ( r -> m () ) ( C.ThreadId -> a )
+
+#+END_SRC
+
+Lots of `m`s being used.
+
+
+#+BEGIN_SRC haskell
+
+class (∀ m. Functor m => Functor (e m)) => Effect e where
+  
+  weave
+      :: (Functor s, Functor m, Functor n)
+      => s ()
+      -> (∀ x. s (m x) -> n (s x))
+      -> e m a
+      -> e n (s a)
+
+ hoist
+        :: ( Functor m
+           , Functor n
+           )
+        => (∀ x. m x -> n x)
+        -> e m a
+        -> e n a
+
+#+END_SRC
+
+`hoist` can be easily defined as `hoist = defaultHoist`.
+
+`weave` is necessary because ... note to self - understand this properly.. 
+( https://reasonablypolymorphic.com/blog/freer-yet-too-costly/#freeing-the-higher-orders, http://www.cs.ox.ac.uk/people/nicolas.wu/papers/Scope.pdf )
+
+
+** Question...
+
+I cannot for the life of me write an instance of weave when ForkFinally is defined with the 'Either SomeException r' parameter:
+
+   = forall r. ForkFinally ( m r ) ( Either SomeException r -> m () ) ( C.ThreadId -> a )
+   
+   I can only get it working like :
+
+  = forall r. ForkFinally ( m r ) ( r -> m () ) ( C.ThreadId -> a )
+  
+and then in the runFork function I only pass the Right values into the `r -> m()`. This is clearly wrong.
+
+What is the correct approach here?
+
+
+* SMTeePee implementation notes
+
+SMTeePee runs a socket server, each incoming connection spawns a new thread. Really there are two different sets of effects needed for the server and for each thread. So I'm not really sure if this is set up correctly.
+
+Most of the Effects are set up in threadEffs when the server runs. The runFork function (for the effect that forks a new thread) needs access to the `Effects -> IO` function, and it seems it needs the same set of effects that the Fork effect is run in. I think ideally I would like to work out a way to get the Fork effect to take a different set of effects so then each thread could be run in a different context to the main server. 
+
+Each thread is *I hope* getting it's own copy of the State effect as each thread could potentially be in a different state.
+
+One effect that can't be set up at this stage is the Client effect, cos this effect needs to be run with the connected socket. So when ForkFinally kicks off a new thread, in runs 'runThread' which does :
+
+
+#+BEGIN_SRC haskell
+runThread conn = runClientSocket conn go
+#+END_SRC
+
+before running the threads stuff.
+
+I'm not 100% happy with this because that runClientSocket is really an implementation detail that is coming along right in the middle of everything. Need to work a better way around this. Maybe I could create some kind of `socket server` effect that keeps all this abstracted away, and keeps the socket in its state, passing only the Client effect to the child threads. Hmmm...? Then a test socket server effect would not spawn a thread.. or indeed not have anything to do with sockets at all..
+
