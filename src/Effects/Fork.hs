@@ -17,20 +17,21 @@ import qualified Control.Exception as X
 import Data.Coerce
 
 data Fork m a 
-  -- = forall r. ForkFinally ( m r ) ( Either SomeException r -> m () ) ( C.ThreadId -> a )
-  = forall r. ForkFinally ( m r ) ( r -> m () ) ( C.ThreadId -> a )
+  = forall r. ForkFinally ( m r ) ( Either SomeException r -> m () ) ( C.ThreadId -> a )
 
 deriving instance Functor (Fork m)
 
 ook_and_then :: ( Functor s, Functor m, Functor n)
              => s ()
-             -> (forall x. s (m x) -> n (s x))
+             -> ( forall x. s (m x) -> n (s x) )
              -> ( Either SomeException r -> m () )
              -> Either SomeException (s r)
              -> n () 
-ook_and_then s f and_then sr = 
-  undefined
-  -- This is a failure of a function...
+ook_and_then s f and_then ( Right sr ) =
+  void $ f $ fmap ( and_then . Right ) sr
+
+ook_and_then s f and_then ( Left z ) =
+  void $ f $ (<$ s) $ and_then ( Left z )
   
 
 ook_k :: ( Functor s )
@@ -45,8 +46,7 @@ instance Effect Fork where
   weave s f (ForkFinally action and_then k) = 
     ForkFinally
     ( f $ action <$ s )
-    ( void . f . fmap and_then )
-    -- ( ook_and_then s f and_then )
+    ( ook_and_then s f and_then )
     ( ook_k s k )
     
 
@@ -63,12 +63,8 @@ runFork :: forall r a
         -> Semantic r a
 runFork unlift = interpret $ \case
   ForkFinally action and_then k ->  do
-    thread <- sendM $ C.forkFinally (runIt action) right_and_then
+    thread <- sendM $ C.forkFinally (runIt action) (runIt . and_then)
     return $ k thread
       where
         runIt :: Semantic (Fork ': r) x -> IO x
         runIt = unlift . runFork unlift
-
-        right_and_then ( Right x ) = ( runIt . and_then ) x
-        right_and_then ( Left _ ) = return ()
-

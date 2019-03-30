@@ -119,28 +119,25 @@ args = Env <$> strOption ( long "port"
                        <> showDefault <> value "SMTeepee"
                        <> help "The app we say we are" )
 
--- | Build up the Effs we want in our thread
-threadEffs :: Env -> Semantic '[Address, R.Reader Env, S.State State, DumpMessage, Log, Lift IO] a -> IO a
-threadEffs env eff = 
-  snd <$> ( runM $ runLog $ runDumpMessage $ (S.runState state) $ (R.runReader env) $ runAddress eff )
-  where
-    state = State { _current = SendGreeting
-                  , _message = emptyMessage }
-
-
 
 runSMTeePee :: IO ()
 runSMTeePee = do
   env <- execParser opts
   withSocketsDo $
-    threadEffs env $
-    runFork (threadEffs env) $
-    R.runResource (threadEffs env . runFork (threadEffs env)) $
-    runServer
+
+    let
+      lower = runM . runFork runM
+      sems = lower . R.runResource lower . runLog . runDumpMessage . S.runState state . R.runReader env . runAddress $ runServer
+    in
+      sems >> return ()
 
   where
-    opts = info ( args <**> helper )
-      ( fullDesc <>
-      progDesc "Run a fake smtp server" )
+    opts = info
+           ( args <**> helper )
+           ( fullDesc <>
+             progDesc "Run a fake smtp server" )
+  
+    state = State { _current = SendGreeting
+                  , _message = emptyMessage }
 
 
