@@ -22,6 +22,7 @@ runDumpMessage =
   DumpMessage path msg k -> do
     ts <- sendM Time.getPOSIXTime
     let path' = path </> show ts <.> "eml"
-    sendM $ writeFile path' $ T.unpack msg
+    sendM . writeFile path' $ T.unpack msg
+    sendM . putStrLn $ T.unpack msg
     return k
 
