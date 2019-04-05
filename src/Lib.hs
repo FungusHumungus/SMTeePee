@@ -23,10 +23,11 @@ import System.FilePath ((<.>), (</>))
 
 
 args :: Parser Env
-args = Env <$> strOption ( long "port"
-                           <> short 'p'
-                           <> showDefault <> value "28"
-                           <> help "The port to listen on" )
+args = Env
+       <$> strOption ( long "port"
+                       <> short 'p'
+                       <> showDefault <> value "28"
+                       <> help "The port to listen on" )
        <*> strOption ( long "output"
                        <> short 'o'
                        <> showDefault <> value "./received/"
@@ -47,7 +48,7 @@ runSMTeePee = do
 
   let lower = runM . S.runState (Nothing :: Maybe Socket)
       lower2 = lower . runTcpServer ( T.unpack $ _port env ) lower 
-      sems = lower2 . runConnectedClient . runLog . runDumpMessage . S.runState state . R.runReader env $ runServerOok
+      sems = lower2 . runConnectedClient . runLog . runDumpMessage . S.runState state . R.runReader env $ go
   
   sems >> return ()
 
@@ -66,16 +67,17 @@ runSMTeePee = do
                   , _message = emptyMessage }
 
 
-runServerOok :: Member (R.Reader Env) sems
-             => Member Log sems
-             => Member (S.State State) sems
-             => Member DumpMessage sems
-             => Member Server sems
-             => Member ConnectedClient sems
-             => Semantic sems ()
-runServerOok =
-  logMessage "Listening..." >>
-  runServer runThread
+    go :: Member (R.Reader Env) sems
+       => Member Log sems
+       => Member (S.State State) sems
+       => Member DumpMessage sems
+       => Member Server sems
+       => Member ConnectedClient sems
+       => Semantic sems ()
+    go = do
+      port <- _port <$> R.ask
+      logMessage $ "Listening on " <> port
+      runServer runThread
  
 
 runThread :: Member (R.Reader Env) sems

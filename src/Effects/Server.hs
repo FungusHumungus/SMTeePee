@@ -1,7 +1,11 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Effects.Server where
+module Effects.Server ( Client
+                      , Server
+                      , runServer
+                      , runTcpServer
+                      ) where
 
 import Polysemy
 import Polysemy.Effect.TH
