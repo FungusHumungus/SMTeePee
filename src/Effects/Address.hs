@@ -1,8 +1,6 @@
 module Effects.Address where
 
 import Polysemy
-import Polysemy.Effect.TH
-import Polysemy.Effect.New
 import qualified Data.Text as T
 import Network.Socket (AddrInfo, Socket, SockAddr)
 import qualified Network.Socket as S
@@ -11,11 +9,10 @@ import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 
 
 data Address m a where
-  Resolve :: S.ServiceName -> (AddrInfo -> a) -> Address m a
-  Open :: AddrInfo -> (Socket -> a) -> Address m a
-  Close :: Socket -> a -> Address m a
-  Accept :: Socket -> ((Socket, SockAddr) -> a) -> Address m a
-  deriving (Functor, Effect)
+  Resolve :: S.ServiceName -> Address m AddrInfo
+  Open :: AddrInfo -> Address m Socket
+  Close :: Socket -> Address m ()
+  Accept :: Socket -> Address m (Socket, SockAddr)
 
 makeSemantic ''Address
 
@@ -23,14 +20,14 @@ makeSemantic ''Address
 runAddress :: Member (Lift IO) sems => Semantic (Address ': sems) a -> Semantic sems a
 runAddress =
   interpret $ \case
-  Resolve port k -> do
+  Resolve port -> do
     let hints = S.defaultHints { S.addrFlags = [S.AI_PASSIVE]
                                , S.addrSocketType = S.Stream
                                }
     addr <- sendM $ S.getAddrInfo (Just hints) Nothing (Just port)
-    return $ k $ head addr
+    return $ head addr
 
-  Open addr k -> do
+  Open addr -> do
     sock <- sendM $ S.socket (S.addrFamily addr) (S.addrSocketType addr) (S.addrProtocol addr)
     sendM $ S.setSocketOption sock S.ReuseAddr 1
     sendM $ S.bind sock (S.addrAddress addr)
@@ -38,11 +35,11 @@ runAddress =
     let fd = S.fdSocket sock
     sendM $ S.setCloseOnExecIfNeeded fd
     sendM $ S.listen sock 10
-    return $ k sock
+    return sock
 
-  Close socket k -> sendM $ S.close socket >> pure k
+  Close socket -> sendM $ S.close socket
 
-  Accept socket k -> 
-    k <$> ( sendM $ S.accept socket )
+  Accept socket -> 
+    sendM $ S.accept socket
 
 

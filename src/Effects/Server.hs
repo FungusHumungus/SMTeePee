@@ -8,8 +8,6 @@ module Effects.Server ( Client
                       ) where
 
 import Polysemy
-import Polysemy.Effect.TH
-import Polysemy.Effect.New
 import qualified Polysemy.State as State
 
 import Control.Monad (void, forever)
@@ -26,23 +24,10 @@ data Client tok = Client
 
 -- | Effect to handle the running of a tcp server.
 data Server m a where
-  RunServer :: ((forall tok. Client tok) -> m ()) -> a -> Server m a
-
-
-instance Functor (Server m) where
-  fmap f (RunServer fn a) = RunServer fn $ f a
-
-
-instance Effect Server where
-  weave s f (RunServer action k) =
-    RunServer
-    (\client -> void . f $ action client <$ s)
-    (k <$ s)
-  
-
-  hoist = defaultHoist
+  RunServer :: ((forall tok. Client tok) -> m ()) -> Server m a
 
 makeSemantic ''Server
+
 
 runTcpServer :: forall sems a
              . Member (Lift IO) sems
@@ -51,20 +36,19 @@ runTcpServer :: forall sems a
              -> (forall x. Semantic sems x -> IO (Maybe Socket, x))
              -> Semantic (Server ': sems) a
              -> Semantic sems a
-runTcpServer port unlift = interpret $ \case
-  RunServer action k -> sendM $ S.withSocketsDo $ do
-    let hints = S.defaultHints { S.addrFlags = [S.AI_PASSIVE]
-                               , S.addrSocketType = S.Stream
-                               }
-    addr <- S.getAddrInfo (Just hints) Nothing (Just port)
-    bracket (open $ head addr) S.close loop
-
-    return k
+runTcpServer port unlift = interpretH $ \case
+  RunServer action -> do
+        action' <- runT ( action Client )
+        let hints = S.defaultHints { S.addrFlags = [S.AI_PASSIVE]
+                                   , S.addrSocketType = S.Stream
+                                   }
+        addr <- sendM $ S.getAddrInfo (Just hints) Nothing (Just port)
+        sendM $ bracket (open $ head addr) S.close ( loop action' )
 
     where
-      loop sock = forever $ do
+      loop action' sock = forever $ do
         (conn, peer) <- S.accept sock
-        _ <- forkFinally (runIt conn $ action Client) (const $ S.close conn)
+        _ <- forkFinally (runIt conn $ action') (const $ S.close conn)
         return ()
 
       runIt :: Member (State.State (Maybe S.Socket)) sems

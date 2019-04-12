@@ -43,7 +43,7 @@ args = Env
 
 
 runSMTeePee :: IO ()
-runSMTeePee = do
+runSMTeePee = withSocketsDo $ do
   env <- execParser opts
 
   let lower = runM . S.runState (Nothing :: Maybe Socket)
@@ -95,5 +95,4 @@ runThread token = do
                 msg <- S.gets (_data . _message)
                 dumpMessage path msg
         else runThread token
-
 

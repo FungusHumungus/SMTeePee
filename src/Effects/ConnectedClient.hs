@@ -1,8 +1,6 @@
 module Effects.ConnectedClient where
 
 import Polysemy
-import Polysemy.Effect.TH
-import Polysemy.Effect.New
 import qualified Polysemy.State as State
 
 import Control.Monad (void, forever)
@@ -21,33 +19,31 @@ import Effects.Server (Client)
 -- once we have a connected socket in our state.
 -- I haven't quite sussed that one out yet...
 data ConnectedClient m a where
-  GetMessage :: Client tok -> ( T.Text -> a ) -> ConnectedClient m a
-  SendMessage :: Client tok -> T.Text -> a -> ConnectedClient m a
+  GetMessage :: Client tok -> ConnectedClient m T.Text 
+  SendMessage :: Client tok -> T.Text -> ConnectedClient m ()
 
 makeSemantic ''ConnectedClient
 
-deriving instance Functor (ConnectedClient m)
-deriving instance Effect ConnectedClient
 
 runConnectedClient :: Member (Lift IO) sems
                    => Member (State.State (Maybe S.Socket)) sems
                    => Semantic (ConnectedClient ': sems) a -> Semantic sems a
 runConnectedClient =
   interpret $ \case
-  GetMessage _ k -> do
+  GetMessage _ -> do
     socket <- State.get 
     case socket of
       Just socket' -> do
         msg <- sendM $ recv socket' 4096
         let msg' = decodeUtf8 msg
-        return . k $ msg'
+        return msg'
       Nothing -> fail "You really should have a socket by now."
     
-  SendMessage _ msg k -> do
+  SendMessage _ msg -> do
     socket <- State.get 
     case socket of
       Just socket' -> do
         sendM $ sendAll socket' $ encodeUtf8 $ msg <> "\n"
       Nothing -> fail "You really should have a socket by now."
 
-    return k
+    return ()
